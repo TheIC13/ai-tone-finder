@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>AI Tone Finder — แต่งหน้าให้เหมาะกับสีผิว</title>
   <style>
-    :root{
-      --bg:#0f1220; --panel:#161a2b; --accent:#61dafb; --text:#e8ecf1; --muted:#9aa4b2;
-      --radius:16px; --shadow:0 12px 30px rgba(0,0,0,.35);
-    }
+    :root{ --bg:#0f1220; --panel:#161a2b; --accent:#61dafb; --text:#e8ecf1; --muted:#9aa4b2; --radius:16px; --shadow:0 12px 30px rgba(0,0,0,.35); }
     *{box-sizing:border-box}
     body{margin:0; font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Noto Sans Thai","Sarabun","Mitr",Arial,sans-serif;
       background: radial-gradient(1200px 600px at 70% -10%, #1e2544 0%, #0f1220 60%), var(--bg); color:var(--text)}
@@ -21,14 +18,14 @@
     .card h2{margin:0; padding:14px 16px; font-size:16px; border-bottom:1px solid rgba(255,255,255,.06); color:#dfe7ff}
     .card .body{padding:14px 16px}
     .controls{display:flex; flex-wrap:wrap; gap:10px; align-items:center}
-    button, .btn{cursor:pointer; background:linear-gradient(180deg,#6ee7ff,#55bfe0); color:#0d1020; border:none; padding:10px 14px; border-radius:12px; font-weight:700; font-size:14px; box-shadow:0 6px 16px rgba(97,218,251,.25)}
+    button{cursor:pointer; background:linear-gradient(180deg,#6ee7ff,#55bfe0); color:#0d1020; border:none; padding:10px 14px; border-radius:12px; font-weight:700; font-size:14px; box-shadow:0 6px 16px rgba(97,218,251,.25)}
     button.secondary{background:rgba(255,255,255,.08); color:#d7e0ea; border:1px solid rgba(255,255,255,.14); box-shadow:none}
     input[type=file]{display:none}
     label.file{padding:10px 14px; border-radius:12px; border:1px dashed rgba(255,255,255,.25); color:#cde7f6; cursor:pointer}
     .stage{position:relative; aspect-ratio:16/10; width:100%; background:#0a0d18; border-radius:12px; overflow:hidden; border:1px solid rgba(255,255,255,.07)}
     video, canvas{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
     .hidden{display:none !important}
-    .over{position:absolute; inset:0; pointer-events:none}
+    .over{position:absolute; inset:0}
     .hint{color:#9fb0cc; font-size:12px; margin-top:10px}
     .kv{display:grid; grid-template-columns:auto 1fr; gap:6px 10px; font-size:14px}
     .kv div:nth-child(odd){color:#b5bfd0}
@@ -63,6 +60,7 @@
             <button id="stopCam" class="secondary">ปิดกล้อง</button>
             <label for="file" class="file">อัปโหลดภาพ/ถ่ายรูป</label>
             <input id="file" type="file" accept="image/*" capture="user" />
+            <button id="manual" class="secondary" title="คลิกจุดผิวแก้ม/คาง 2–6 จุดเพื่อวิเคราะห์">โหมดเลือกจุดเอง</button>
           </div>
           <div id="toast" class="toast" style="display:none"></div>
           <div class="stage card" style="margin-top:12px">
@@ -86,7 +84,7 @@
           <div class="sep"></div>
           <div class="palette" id="palette"></div>
           <div class="sep"></div>
-          <div class="note">ระบบวิเคราะห์อัตโนมัติจากภาพ/วิดีโอ ไม่มี “โหมดเลือกจุดเอง” เพื่อความง่าย</div>
+          <div class="note">วิเคราะห์อัตโนมัติ หรือใช้ “โหมดเลือกจุดเอง” แล้วคลิกแก้ม-คางเพื่อจับสี</div>
         </div>
       </section>
     </div>
@@ -106,9 +104,14 @@
   let detector = null;
   let lastAnalysis = 0;
 
+  // manual mode
+  let manualMode = false;
+  let manualPoints = [];
+
   const ui = {
     startCam: document.getElementById('startCam'),
     stopCam: document.getElementById('stopCam'),
+    manual: document.getElementById('manual'),
     file: document.getElementById('file'),
     tone: document.getElementById('tone'),
     undertone: document.getElementById('undertone'),
@@ -117,355 +120,221 @@
     palette: document.getElementById('palette'),
   };
 
-  function fitCanvases(w, h){
-    [canvas, overlay].forEach(cv => { cv.width = w; cv.height = h; });
-  }
-  function showToast(msg, type=''){
-    toast.textContent = msg;
-    toast.className = 'toast ' + (type || '');
-    toast.style.display = 'block';
-  }
-  async function ensureDetector(){
-    if ('FaceDetector' in window) {
-      if (!detector) detector = new window.FaceDetector({ maxDetectedFaces: 1, fastMode: true });
-      return true;
-    }
-    return false;
-  }
+  function fitCanvases(w, h){ [canvas, overlay].forEach(cv => { cv.width = w; cv.height = h; }); }
+  function showToast(msg, type=''){ toast.textContent = msg; toast.className = 'toast ' + (type || ''); toast.style.display = 'block'; }
+  async function ensureDetector(){ if ('FaceDetector' in window){ if(!detector) detector = new FaceDetector({maxDetectedFaces:1, fastMode:true}); return true; } return false; }
 
   async function startCamera(){
     try{
       if (!isSecureContext || location.protocol === 'file:') throw new Error('SECURE_CONTEXT');
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('NO_API');
       try{
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio:false });
-      }catch(e1){
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio:false });
-      }
-      video.srcObject = stream;
-      video.classList.remove('hidden');
-      usingVideo = true;
-      video.onloadedmetadata = () => {
-        fitCanvases(video.videoWidth, video.videoHeight);
-        showToast('กล้องทำงานแล้ว หากไม่เห็นภาพ ตรวจสิทธิ์กล้องจากไอคอนรูปกุญแจ', '');
-        drawLoop();
-      };
+        stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:1280}, height:{ideal:720} }, audio:false });
+      }catch{ stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false }); }
+      video.srcObject = stream; video.classList.remove('hidden'); usingVideo = true;
+      video.onloadedmetadata = () => { fitCanvases(video.videoWidth, video.videoHeight); showToast('กล้องทำงานแล้ว', ''); drawLoop(); };
     }catch(err){
-      let msg = 'เปิดกล้องไม่สำเร็จ';
-      let type = 'bad';
-      if (err.message === 'SECURE_CONTEXT'){
-        msg = 'ต้องเปิดผ่าน https หรือ http://localhost เท่านั้น ขณะนี้เปิดแบบ file:// จึงใช้กล้องไม่ได้';
-        type = 'warn';
-      }else if (err.name === 'NotAllowedError'){
-        msg = 'เบราว์เซอร์บล็อกสิทธิ์กล้อง ให้กดไอคอนรูปกุญแจ แล้วเลือก Allow Camera';
-      }else if (err.name === 'NotFoundError'){
-        msg = 'ไม่พบอุปกรณ์กล้อง ต่อกล้องหรือเลือกกล้องที่มีในระบบ';
-      }else if (err.name === 'NotReadableError'){
-        msg = 'กล้องถูกใช้งานโดยโปรแกรมอื่น ปิดโปรแกรมกล้องอื่นก่อน';
-      }else if (err.message === 'NO_API'){
-        msg = 'เบราว์เซอร์นี้ไม่รองรับ getUserMedia อัปเดตหรือเปลี่ยนเป็น Chrome/Edge/Firefox';
-      }
+      let msg='เปิดกล้องไม่สำเร็จ', type='bad';
+      if (err.message==='SECURE_CONTEXT'){ msg='ต้องเปิดผ่าน https หรือ http://localhost เท่านั้น ขณะนี้เปิดแบบ file://'; type='warn'; }
+      else if (err.name==='NotAllowedError'){ msg='เบราว์เซอร์บล็อกสิทธิ์กล้อง ให้ Allow ที่ไอคอนกุญแจ'; }
+      else if (err.name==='NotFoundError'){ msg='ไม่พบอุปกรณ์กล้อง'; }
+      else if (err.name==='NotReadableError'){ msg='กล้องถูกใช้งานโดยโปรแกรมอื่น'; }
+      else if (err.message==='NO_API'){ msg='เบราว์เซอร์นี้ไม่รองรับ getUserMedia'; }
       showToast(msg, type);
-      console.error(err);
     }
   }
-  function stopCamera(){
-    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    usingVideo = false;
-    video.classList.add('hidden');
-    showToast('ปิดกล้องแล้ว', '');
-  }
+  function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } usingVideo=false; video.classList.add('hidden'); showToast('ปิดกล้องแล้ว',''); }
 
   function cheekROIsFromBox(b){
-    const left  = { x: b.x + b.width*0.22, y: b.y + b.height*0.55, w: b.width*0.16, h: b.height*0.16 };
-    const right = { x: b.x + b.width*0.62, y: b.y + b.height*0.55, w: b.width*0.16, h: b.height*0.16 };
-    const chin  = { x: b.x + b.width*0.35, y: b.y + b.height*0.80, w: b.width*0.30, h: b.height*0.12 };
-    return [left, right, chin];
+    const left  = { x:b.x+b.width*0.22, y:b.y+b.height*0.55, w:b.width*0.16, h:b.height*0.16 };
+    const right = { x:b.x+b.width*0.62, y:b.y+b.height*0.55, w:b.width*0.16, h:b.height*0.16 };
+    const chin  = { x:b.x+b.width*0.35, y:b.y+b.height*0.80, w:b.width*0.30, h:b.height*0.12 };
+    return [left,right,chin];
   }
   function defaultROIs(){
-    const w = canvas.width, h = canvas.height;
+    const w=canvas.width,h=canvas.height;
     return [
-      {x: w*0.33-20, y: h*0.58-20, w: 40, h: 40},
-      {x: w*0.66-20, y: h*0.58-20, w: 40, h: 40},
-      {x: w*0.50-30, y: h*0.78-20, w: 60, h: 40},
+      {x:w*0.33-20,y:h*0.58-20,w:40,h:40},
+      {x:w*0.66-20,y:h*0.58-20,w:40,h:40},
+      {x:w*0.50-30,y:h*0.78-20,w:60,h:40},
     ];
   }
 
   function pickPixelsFromROIs(rois){
-    const arr = [];
-    rois.forEach(r => {
-      const {x,y,w,h} = r;
-      const rx = Math.max(0, x|0), ry = Math.max(0, y|0);
-      const rw = Math.min(canvas.width-rx, w|0), rh = Math.min(canvas.height-ry, h|0);
-      if (rw<=0 || rh<=0) return;
-      const data = ctx.getImageData(rx, ry, rw, rh).data;
-      for (let i=0; i<data.length; i+=4){
-        const R = data[i]/255, G = data[i+1]/255, B = data[i+2]/255, A = data[i+3]/255;
-        if (A < 0.98) continue;
-        const {h:hh, s, v} = rgb2hsv(R,G,B);
-        const isSkinHue = (hh >= 0 && hh <= 55) || (hh >= 330 && hh <= 360);
-        if (v > 0.25 && s < 0.65 && isSkinHue) arr.push([R,G,B]);
+    const out=[];
+    rois.forEach(r=>{
+      const rx=Math.max(0,r.x|0), ry=Math.max(0,r.y|0);
+      const rw=Math.min(canvas.width-rx, r.w|0), rh=Math.min(canvas.height-ry, r.h|0);
+      if(rw<=0||rh<=0) return;
+      const data=ctx.getImageData(rx,ry,rw,rh).data;
+      for(let i=0;i<data.length;i+=4){
+        const R=data[i]/255, G=data[i+1]/255, B=data[i+2]/255, A=data[i+3]/255;
+        if(A<0.98) continue;
+        const {h,s,v}=rgb2hsv(R,G,B);
+        const skin = (h>=0&&h<=55)||(h>=330&&h<=360);
+        if(v>0.25 && s<0.65 && skin) out.push([R,G,B]);
       }
     });
-    return arr;
+    return out;
   }
-  function meanColor(pixels){
-    if (!pixels.length) return null;
-    let r=0,g=0,b=0;
-    for (const [R,G,B] of pixels){ r+=R; g+=G; b+=B; }
-    r/=pixels.length; g/=pixels.length; b/=pixels.length;
-    return [r,g,b];
-  }
+  function meanColor(px){ if(!px.length) return null; let r=0,g=0,b=0; for(const [R,G,B] of px){ r+=R; g+=G; b+=B; } return [r/px.length,g/px.length,b/px.length]; }
   function classifyLAB(L,a,b){
-    let depth;
-    if (L >= 75) depth = 'fair / light';
-    else if (L >= 65) depth = 'light-medium';
-    else if (L >= 55) depth = 'medium';
-    else if (L >= 45) depth = 'tan';
-    else if (L >= 35) depth = 'deep';
-    else depth = 'rich deep';
-    const d = b - a;
-    let undertone;
-    if (d >= 12) undertone = 'warm';
-    else if (-d >= 12) undertone = 'cool';
-    else undertone = 'neutral';
-    return { depth, undertone };
+    let depth = L>=75?'fair / light':L>=65?'light-medium':L>=55?'medium':L>=45?'tan':L>=35?'deep':'rich deep';
+    const d=b-a; let undertone = d>=12?'warm':(-d)>=12?'cool':'neutral';
+    return {depth,undertone};
   }
-  function rgb2hsv(r,g,b){
-    const max = Math.max(r,g,b), min = Math.min(r,g,b);
-    const d = max - min;
-    let h = 0;
-    if (d !== 0){
-      switch(max){
-        case r: h = ((g-b)/d) % 6; break;
-        case g: h = (b-r)/d + 2; break;
-        case b: h = (r-g)/d + 4; break;
-      }
-      h *= 60;
-      if (h < 0) h += 360;
-    }
-    const s = max === 0 ? 0 : d/max;
-    const v = max;
-    return {h, s, v};
-  }
-  function srgb2xyz(r,g,b){
-    const lin = t => (t <= 0.04045 ? t/12.92 : Math.pow((t+0.055)/1.055, 2.4));
-    r = lin(r); g = lin(g); b = lin(b);
-    const X = r*0.4124 + g*0.3576 + b*0.1805;
-    const Y = r*0.2126 + g*0.7152 + b*0.0722;
-    const Z = r*0.0193 + g*0.1192 + b*0.9505;
-    return {X,Y,Z};
-  }
-  function xyz2lab(X,Y,Z){
-    const Xn=0.95047, Yn=1.00000, Zn=1.08883;
-    const fx = f(X/Xn), fy = f(Y/Yn), fz = f(Z/Zn);
-    const L = 116*fy - 16;
-    const a = 500*(fx - fy);
-    const b = 200*(fy - fz);
-    return {L,a,b};
-    function f(t){ return t > 0.008856 ? Math.cbrt(t) : (7.787*t + 16/116); }
-  }
-  function rgb2lab(r,g,b){
-    const {X,Y,Z} = srgb2xyz(r,g,b);
-    return xyz2lab(X,Y,Z);
-  }
+  function rgb2hsv(r,g,b){ const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min; let h=0;
+    if(d!==0){ switch(max){case r:h=((g-b)/d)%6;break;case g:h=(b-r)/d+2;break;case b:h=(r-g)/d+4;break;} h*=60; if(h<0) h+=360; }
+    const s=max===0?0:d/max, v=max; return {h:s?+h:0, s, v}; }
+  function srgb2xyz(r,g,b){ const lin=t=>t<=0.04045?t/12.92:Math.pow((t+0.055)/1.055,2.4); r=lin(r); g=lin(g); b=lin(b);
+    return {X:r*0.4124+g*0.3576+b*0.1805, Y:r*0.2126+g*0.7152+b*0.0722, Z:r*0.0193+g*0.1192+b*0.9505}; }
+  function xyz2lab(X,Y,Z){ const Xn=0.95047,Yn=1, Zn=1.08883; const fx=f(X/Xn), fy=f(Y/Yn), fz=f(Z/Zn);
+    return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)}; function f(t){return t>0.008856?Math.cbrt(t):(7.787*t+16/116);} }
+  function rgb2lab(r,g,b){ const {X,Y,Z}=srgb2xyz(r,g,b); return xyz2lab(X,Y,Z); }
 
   function renderResult(Lab, cat, rgb){
-    ui.tone.textContent = cat.depth;
-    ui.undertone.textContent = cat.undertone;
-    ui.lab.textContent = `(${Lab.L.toFixed(1)}, ${Lab.a.toFixed(1)}, ${Lab.b.toFixed(1)})`;
-
-    ui.swatches.innerHTML = '';
-    const sw = [
-      {name:'sample', rgb},
-      {name:'soft peach', rgb: [0.98,0.84,0.76]},
-      {name:'rose beige', rgb: [0.92,0.80,0.83]},
-      {name:'warm sand', rgb: [0.84,0.71,0.58]},
-      {name:'tan bronze', rgb: [0.54,0.40,0.30]},
-      {name:'deep espresso', rgb: [0.24,0.16,0.12]},
-    ];
-    sw.forEach(s => {
-      const el = document.createElement('div');
-      el.title = s.name;
-      el.style.background = `rgb(${(s.rgb[0]*255)|0}, ${(s.rgb[1]*255)|0}, ${(s.rgb[2]*255)|0})`;
-      ui.swatches.appendChild(el);
+    ui.tone.textContent=cat.depth; ui.undertone.textContent=cat.undertone; ui.lab.textContent=`(${Lab.L.toFixed(1)}, ${Lab.a.toFixed(1)}, ${Lab.b.toFixed(1)})`;
+    ui.swatches.innerHTML='';
+    [{rgb},{rgb:[0.98,0.84,0.76]},{rgb:[0.92,0.80,0.83]},{rgb:[0.84,0.71,0.58]},{rgb:[0.54,0.40,0.30]},{rgb:[0.24,0.16,0.12]}].forEach(s=>{
+      const el=document.createElement('div'); el.style.background=`rgb(${(s.rgb[0]*255)|0},${(s.rgb[1]*255)|0},${(s.rgb[2]*255)|0})`; ui.swatches.appendChild(el);
     });
-
-    const pal = helperChips(cat.undertone, cat.depth);
-    ui.palette.innerHTML = '';
-    for (const group of pal){
-      const label = document.createElement('div');
-      label.className = 'label';
-      label.textContent = group.title;
-      const row = document.createElement('div');
-      row.className = 'rowchips';
-      for (const c of group.colors){
-        const chip = document.createElement('div');
-        chip.className = 'chip';
-        chip.style.background = c.hex;
-        chip.title = c.name;
-        row.appendChild(chip);
-      }
-      ui.palette.appendChild(label);
-      ui.palette.appendChild(row);
-      if (group.tip){
-        const tip = document.createElement('div');
-        tip.className = 'tip';
-        tip.textContent = group.tip;
-        ui.palette.appendChild(tip);
-      }
+    const pal=helperChips(cat.undertone, cat.depth); ui.palette.innerHTML='';
+    for(const group of pal){
+      const label=document.createElement('div'); label.className='label'; label.textContent=group.title;
+      const row=document.createElement('div'); row.className='rowchips';
+      for(const c of group.colors){ const chip=document.createElement('div'); chip.className='chip'; chip.style.background=c.hex; chip.title=c.name; row.appendChild(chip); }
+      ui.palette.appendChild(label); ui.palette.appendChild(row);
+      if(group.tip){ const tip=document.createElement('div'); tip.className='tip'; tip.textContent=group.tip; ui.palette.appendChild(tip); }
     }
   }
 
   function helperChips(undertone, depth){
-    const deepen = (hex, factor=0.85) => {
-      const v = parseInt(hex.slice(1),16);
-      let r=(v>>16)&255, g=(v>>8)&255, b=v&255;
-      r = Math.max(0, Math.floor(r*factor));
-      g = Math.max(0, Math.floor(g*factor));
-      b = Math.max(0, Math.floor(b*factor));
-      return '#' + [r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
-    };
-    const deepish = /deep|tan/.test(depth);
-    const adjust = hex => deepish ? deepen(hex, 0.80) : hex;
+    const deepen=(hex,f=0.85)=>{ const v=parseInt(hex.slice(1),16); let r=(v>>16)&255,g=(v>>8)&255,b=v&255;
+      r=Math.max(0,Math.floor(r*f)); g=Math.max(0,Math.floor(g*f)); b=Math.max(0,Math.floor(b*f));
+      return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join(''); };
+    const deepish=/deep|tan/.test(depth); const adjust=hex=>deepish?deepen(hex,0.80):hex;
 
-    const baseWarm = [{name:'Golden 1',hex:'#E5C083'},{name:'Olive 1',hex:'#C7A26B'},{name:'Golden 2',hex:'#B98954'}];
-    const baseCool = [{name:'Neutral-Pink 1',hex:'#E2B7B4'},{name:'Pink 1',hex:'#D49FA2'},{name:'Neutral-Pink 2',hex:'#C79194'}];
-    const baseNeut = [{name:'Neutral 1',hex:'#D9B7A4'},{name:'Neutral 2',hex:'#C49A85'},{name:'Neutral 3',hex:'#B3866E'}];
+    const baseWarm=[{name:'Golden 1',hex:'#E5C083'},{name:'Olive 1',hex:'#C7A26B'},{name:'Golden 2',hex:'#B98954'}];
+    const baseCool=[{name:'Neutral-Pink 1',hex:'#E2B7B4'},{name:'Pink 1',hex:'#D49FA2'},{name:'Neutral-Pink 2',hex:'#C79194'}];
+    const baseNeut=[{name:'Neutral 1',hex:'#D9B7A4'},{name:'Neutral 2',hex:'#C49A85'},{name:'Neutral 3',hex:'#B3866E'}];
 
-    const conWarm = [{name:'Peach Correct',hex:'#F1A07A'},{name:'Golden Conceal',hex:'#E0B184'}];
-    const conCool = [{name:'Pink Brighten',hex:'#E6B3B8'},{name:'Neutral-Pink',hex:'#D7A0A6'}];
-    const conNeut = [{name:'Neutral Conceal',hex:'#D9B49A'},{name:'Peach-Neutral',hex:'#E4A982'}];
+    const conWarm=[{name:'Peach Correct',hex:'#F1A07A'},{name:'Golden Conceal',hex:'#E0B184'}];
+    const conCool=[{name:'Pink Brighten',hex:'#E6B3B8'},{name:'Neutral-Pink',hex:'#D7A0A6'}];
+    const conNeut=[{name:'Neutral Conceal',hex:'#D9B49A'},{name:'Peach-Neutral',hex:'#E4A982'}];
 
-    const powTrans = [{name:'Translucent',hex:'#F5F5F5'},{name:'Banana',hex:'#FFE082'},{name:'Tinted',hex:'#D2B48C'}];
+    const powTrans=[{name:'Translucent',hex:'#F5F5F5'},{name:'Banana',hex:'#FFE082'},{name:'Tinted',hex:'#D2B48C'}];
 
-    const browCool = [{name:'Ash Brown',hex:'#6B5B53'},{name:'Taupe',hex:'#8B7D70'}];
-    const browWarm = [{name:'Warm Brown',hex:'#705137'},{name:'Dark Brown',hex:'#4B2E2A'}];
-    const browNeut = [{name:'Neutral Brown',hex:'#6E4F3A'},{name:'Soft Brown',hex:'#7C5B47'}];
+    const browCool=[{name:'Ash Brown',hex:'#6B5B53'},{name:'Taupe',hex:'#8B7D70'}];
+    const browWarm=[{name:'Warm Brown',hex:'#705137'},{name:'Dark Brown',hex:'#4B2E2A'}];
+    const browNeut=[{name:'Neutral Brown',hex:'#6E4F3A'},{name:'Soft Brown',hex:'#7C5B47'}];
 
-    const eyeWarm = [{name:'Gold',hex:'#D4AF37'},{name:'Champagne',hex:'#F7E7CE'},{name:'Copper',hex:'#B87333'},{name:'Caramel',hex:'#8B5A2B'},{name:'Olive',hex:'#808000'}];
-    const eyeCool = [{name:'Silver',hex:'#C0C0C0'},{name:'Mocha',hex:'#A48374'},{name:'Dusty Mauve',hex:'#8E6E83'},{name:'Cool Rose Gold',hex:'#B76E79'}];
-    const eyeNeut = [{name:'Medium Brown',hex:'#8B6B4E'},{name:'Rose Gold',hex:'#B76E79'},{name:'Olive Taupe',hex:'#6F6B57'}];
+    const eyeWarm=[{name:'Gold',hex:'#D4AF37'},{name:'Champagne',hex:'#F7E7CE'},{name:'Copper',hex:'#B87333'},{name:'Caramel',hex:'#8B5A2B'},{name:'Olive',hex:'#808000'}];
+    const eyeCool=[{name:'Silver',hex:'#C0C0C0'},{name:'Mocha',hex:'#A48374'},{name:'Dusty Mauve',hex:'#8E6E83'},{name:'Cool Rose Gold',hex:'#B76E79'}];
+    const eyeNeut=[{name:'Medium Brown',hex:'#8B6B4E'},{name:'Rose Gold',hex:'#B76E79'},{name:'Olive Taupe',hex:'#6F6B57'}];
 
-    const mascara = [{name:'Black',hex:'#000000'},{name:'Brown',hex:'#4B3621'},{name:'Plum',hex:'#4B2840'}];
+    const mascara=[{name:'Black',hex:'#000000'},{name:'Brown',hex:'#4B3621'},{name:'Plum',hex:'#4B2840'}];
 
-    const linerWarm = [{name:'Dark Brown',hex:'#3E2723'},{name:'Olive',hex:'#556B2F'},{name:'Bronze',hex:'#614126'}];
-    const linerCool = [{name:'Black',hex:'#000000'},{name:'Charcoal',hex:'#36454F'},{name:'Plum',hex:'#5D3A66'}];
-    const linerNeut = [{name:'Brown',hex:'#4B3621'},{name:'Charcoal',hex:'#36454F'}];
+    const linerWarm=[{name:'Dark Brown',hex:'#3E2723'},{name:'Olive',hex:'#556B2F'},{name:'Bronze',hex:'#614126'}];
+    const linerCool=[{name:'Black',hex:'#000000'},{name:'Charcoal',hex:'#36454F'},{name:'Plum',hex:'#5D3A66'}];
+    const linerNeut=[{name:'Brown',hex:'#4B3621'},{name:'Charcoal',hex:'#36454F'}];
 
-    const blushWarm = [{name:'Peach',hex:'#F6A58B'},{name:'Coral',hex:'#FF7F50'},{name:'Terracotta',hex:'#C65D3E'}];
-    const blushCool = [{name:'Rose',hex:'#E8A0B3'},{name:'Plum',hex:'#8E5878'},{name:'Pink Nude',hex:'#D7A6A5'}];
-    const blushNeut = [{name:'Rose-Peach',hex:'#E8A188'},{name:'Apricot',hex:'#F3A271'},{name:'Pink-Brown',hex:'#B97E73'}];
+    const blushWarm=[{name:'Peach',hex:'#F6A58B'},{name:'Coral',hex:'#FF7F50'},{name:'Terracotta',hex:'#C65D3E'}];
+    const blushCool=[{name:'Rose',hex:'#E8A0B3'},{name:'Plum',hex:'#8E5878'},{name:'Pink Nude',hex:'#D7A6A5'}];
+    const blushNeut=[{name:'Rose-Peach',hex:'#E8A188'},{name:'Apricot',hex:'#F3A271'},{name:'Pink-Brown',hex:'#B97E73'}];
 
-    const lipWarm = [{name:'Red-Orange',hex:'#FF3B2E'},{name:'Brick',hex:'#B22222'},{name:'Terracotta',hex:'#C65D3E'},{name:'Nude Peach',hex:'#E1A18B'}];
-    const lipCool = [{name:'Blue-Red',hex:'#C10230'},{name:'Berry',hex:'#7F1734'},{name:'Plum',hex:'#5A2A4C'},{name:'Dusty Rose',hex:'#B77A86'}];
-    const lipNeut = [{name:'Nude Pink',hex:'#D7A6A5'},{name:'Nude Peach',hex:'#E1A18B'},{name:'Rose',hex:'#B77A86'},{name:'Beige Brown',hex:'#8C5E4A'}];
+    const lipWarm=[{name:'Red-Orange',hex:'#FF3B2E'},{name:'Brick',hex:'#B22222'},{name:'Terracotta',hex:'#C65D3E'},{name:'Nude Peach',hex:'#E1A18B'}];
+    const lipCool=[{name:'Blue-Red',hex:'#C10230'},{name:'Berry',hex:'#7F1734'},{name:'Plum',hex:'#5A2A4C'},{name:'Dusty Rose',hex:'#B77A86'}];
+    const lipNeut=[{name:'Nude Pink',hex:'#D7A6A5'},{name:'Nude Peach',hex:'#E1A18B'},{name:'Rose',hex:'#B77A86'},{name:'Beige Brown',hex:'#8C5E4A'}];
 
-    const pick = (w,c,n) => undertone==='warm'?w:undertone==='cool'?c:n;
+    const pick=(w,c,n)=>undertone==='warm'?w:undertone==='cool'?c:n;
 
-    const groups = [
-      {title:'รองพื้น', colors: pick(baseWarm, baseCool, baseNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'เลือกเฉดใกล้คอที่สุด โทนผิดแก้ด้วยคอนซีลเลอร์เฉพาะจุด'},
-      {title:'คอนซีลเลอร์', colors: pick(conWarm, conCool, conNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'ใต้ตาให้สว่างกว่ารองพื้น ~½ เฉด รอยสิวให้เท่ารองพื้น'},
-      {title:'แป้ง – เซ็ตผิว', colors: powTrans.map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'ผิวแห้งใช้แป้งโปร่งแสงบาง ๆ ผิวมันใช้ tinted/banana เฉพาะ T-zone'},
-      {title:'เขียนคิ้ว', colors: pick(browWarm, browCool, browNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'เลือกเฉดใกล้สีผม ถ้าผมอ่อนให้คิ้วอ่อนลง 1 ระดับ'},
-      {title:'อายแชโดว์', colors: pick(eyeWarm, eyeCool, eyeNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'ทาอ่อนทั่วเปลือก + สีเข้มที่หางตา เบลนด์ให้ฟุ้ง'},
-      {title:'มาสคาร่า', colors: mascara.map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'ผิวอ่อนใช้สีน้ำตาลธรรมชาติ ผิวเข้มใช้ดำหรือพลัม'},
-      {title:'อายไลเนอร์', colors: pick(linerWarm, linerCool, linerNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'อินเนอร์ไลนิงช่วยให้ตาดูคมโดยไม่หนา'},
-      {title:'บลัชออน', colors: pick(blushWarm, blushCool, blushNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'ลงบริเวณโหนกแก้ม เบลนด์เข้าหากรอบหน้า'},
-      {title:'ลิปสติก', colors: pick(lipWarm, lipCool, lipNeut).map(c=>({name:c.name,hex:adjust(c.hex)})),
-       tip:'นู้ดให้เข้มกว่าปากจริง 1 ระดับ เพื่อไม่ซีด'},
+    return [
+      {title:'รองพื้น', colors: pick(baseWarm,baseCool,baseNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'เลือกเฉดใกล้คอที่สุด'},
+      {title:'คอนซีลเลอร์', colors: pick(conWarm,conCool,conNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'ใต้ตาสว่างกว่ารองพื้น ~½ เฉด'},
+      {title:'แป้ง – เซ็ตผิว', colors: powTrans.map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'โปร่งแสงบาง ๆ หรือ banana ที่ T-zone'},
+      {title:'เขียนคิ้ว', colors: pick(browWarm,browCool,browNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'ใกล้สีผมที่สุด'},
+      {title:'อายแชโดว์', colors: pick(eyeWarm,eyeCool,eyeNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'อ่อนทั่วเปลือก เข้มที่หาง'},
+      {title:'มาสคาร่า', colors: mascara.map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'ผิวอ่อน=น้ำตาล ผิวเข้ม=ดำ/พลัม'},
+      {title:'อายไลเนอร์', colors: pick(linerWarm,linerCool,linerNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'อินเนอร์ไลนิงช่วยคม'},
+      {title:'บลัชออน', colors: pick(blushWarm,blushCool,blushNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'ลงบนโหนกแก้ม'},
+      {title:'ลิปสติก', colors: pick(lipWarm,lipCool,lipNeut).map(c=>({name:c.name,hex:adjust(c.hex)})), tip:'นู้ดให้เข้มกว่าปาก 1 ระดับ'},
     ];
-    return groups;
   }
 
   async function drawLoop(){
-    if (!usingVideo) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if(!usingVideo) return;
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
     try{
-      if ('FaceDetector' in window){
-        if (!detector) detector = new window.FaceDetector({maxDetectedFaces:1, fastMode:true});
-        const faces = await detector.detect(canvas);
-        octx.clearRect(0,0,overlay.width, overlay.height);
-        if (faces && faces.length){
-          const b = faces[0].boundingBox;
-          octx.strokeStyle = 'rgba(97,218,251,0.95)';
-          octx.lineWidth = 2.5;
-          roundRect(octx, b.x, b.y, b.width, b.height, 12);
-          octx.stroke();
+      if(!manualMode && 'FaceDetector' in window){
+        if(!detector) detector=new FaceDetector({maxDetectedFaces:1,fastMode:true});
+        const faces=await detector.detect(canvas);
+        octx.clearRect(0,0,overlay.width,overlay.height);
+        if(faces && faces.length){
+          const b=faces[0].boundingBox;
+          octx.strokeStyle='rgba(97,218,251,0.95)'; octx.lineWidth=2.5; roundRect(octx,b.x,b.y,b.width,b.height,12); octx.stroke();
         }
       }
     }catch(e){}
 
-    const now = performance.now();
-    if (now - lastAnalysis > 800){
-      analyze(false);
-      lastAnalysis = now;
-    }
+    const now=performance.now();
+    if(now-lastAnalysis>800){ analyze(false); lastAnalysis=now; }
     requestAnimationFrame(drawLoop);
   }
 
-  function roundRect(ctx, x, y, w, h, r){
-    ctx.beginPath();
-    ctx.moveTo(x+r, y);
-    ctx.arcTo(x+w, y, x+w, y+h, r);
-    ctx.arcTo(x+w, y+h, x, y+h, r);
-    ctx.arcTo(x, y+h, x, y, r);
-    ctx.arcTo(x, y, x+w, y, r);
-    ctx.stroke();
-  }
+  function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.stroke(); }
 
   async function analyze(notify=true){
-    if (usingVideo) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    let rois = [];
-    if (await ensureDetector()){
-      try{
-        const faces = await detector.detect(canvas);
-        if (faces && faces.length) rois = cheekROIsFromBox(faces[0].boundingBox);
-      }catch(e){}
+    if(usingVideo) ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    let rois=[];
+    if(manualMode && manualPoints.length){
+      rois = manualPoints.map(p=>({x:p.x-20,y:p.y-20,w:40,h:40}));
+    }else if(await ensureDetector()){
+      try{ const faces=await detector.detect(canvas); if(faces && faces.length) rois=cheekROIsFromBox(faces[0].boundingBox); }catch(e){}
     }
-    if (!rois.length) rois = defaultROIs();
+    if(!rois.length) rois=defaultROIs();
 
-    const pixels = pickPixelsFromROIs(rois);
-    const mean = meanColor(pixels);
-    if (!mean){
-      if (notify) showToast('จับสีผิวไม่สำเร็จ ลองขยับหน้าเข้าเฟรม/หันหาแสงธรรมชาติ', 'warn');
-      return;
-    }
-    const Lab = rgb2lab(...mean);
-    const cat = classifyLAB(Lab.L, Lab.a, Lab.b);
-    renderResult(Lab, cat, mean);
+    const px=pickPixelsFromROIs(rois); const mean=meanColor(px);
+    if(!mean){ if(notify) showToast('จับสีผิวไม่สำเร็จ ลองขยับหน้า/เพิ่มแสง หรือใช้โหมดเลือกจุด', 'warn'); return; }
+    const Lab=rgb2lab(...mean); const cat=classifyLAB(Lab.L,Lab.a,Lab.b); renderResult(Lab,cat,mean);
+  }
+
+  // manual picking
+  ui.manual.addEventListener('click', ()=>{
+    manualMode=!manualMode; manualPoints=[]; octx.clearRect(0,0,overlay.width,overlay.height);
+    overlay.style.pointerEvents = manualMode ? 'auto' : 'none';
+    ui.manual.textContent = manualMode ? 'ออกจากโหมดเลือกจุดเอง' : 'โหมดเลือกจุดเอง';
+  });
+  overlay.addEventListener('click',(e)=>{
+    if(!manualMode) return;
+    const rect=overlay.getBoundingClientRect();
+    const x=(e.clientX-rect.left)*(overlay.width/rect.width);
+    const y=(e.clientY-rect.top)*(overlay.height/rect.height);
+    manualPoints.push({x,y}); if(manualPoints.length>6) manualPoints.shift();
+    drawManualPicks(); analyze(false);
+  });
+  function drawManualPicks(){
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    manualPoints.forEach(p=>{
+      octx.fillStyle='rgba(97,218,251,.25)'; octx.beginPath(); octx.arc(p.x,p.y,10,0,Math.PI*2); octx.fill();
+      octx.strokeStyle='rgba(97,218,251,.95)'; octx.lineWidth=2; octx.beginPath(); octx.arc(p.x,p.y,12,0,Math.PI*2); octx.stroke();
+    });
   }
 
   ui.startCam.addEventListener('click', startCamera);
-  ui.stopCam.addEventListener('click', () => { stopCamera(); });
+  ui.stopCam.addEventListener('click', stopCamera);
 
-  ui.file.addEventListener('change', (ev) => {
-    const f = ev.target.files?.[0];
-    if (!f) return;
+  ui.file.addEventListener('change',(ev)=>{
+    const f=ev.target.files?.[0]; if(!f) return;
     stopCamera();
-    const img = new Image();
-    img.onload = () => {
-      fitCanvases(img.naturalWidth, img.naturalHeight);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      overlay.width = canvas.width; overlay.height = canvas.height;
-      octx.clearRect(0,0,overlay.width, overlay.height);
-      analyze(true);
-    };
-    img.src = URL.createObjectURL(f);
+    const img=new Image();
+    img.onload=()=>{ fitCanvases(img.naturalWidth,img.naturalHeight); ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      overlay.width=canvas.width; overlay.height=canvas.height; octx.clearRect(0,0,overlay.width,overlay.height); analyze(true); };
+    img.src=URL.createObjectURL(f);
   });
 
-  window.addEventListener('load', () => {
-    if (!isSecureContext || location.protocol === 'file:'){
-      showToast('ไลฟ์กล้องใช้ไม่ได้เมื่อเปิดไฟล์โดยตรง ให้รันผ่าน https หรือ http://localhost; มือถือถ่ายภาพผ่านปุ่มอัปโหลดได้เลย', 'warn');
-    }
+  window.addEventListener('load', ()=>{
+    overlay.style.pointerEvents='none';
+    if(!isSecureContext || location.protocol==='file:'){ showToast('ไลฟ์กล้องใช้ได้เมื่อเปิดผ่าน https หรือ http://localhost; มือถือถ่ายรูปผ่านปุ่มอัปโหลดได้', 'warn'); }
   });
 })();
 </script>
